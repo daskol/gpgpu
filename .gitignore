@@ -1,3 +1,7 @@
+# Ignore default build directory.
+build/
+
+# Ignore CUDA-related files.
 *.i
 *.ii
 *.gpu
