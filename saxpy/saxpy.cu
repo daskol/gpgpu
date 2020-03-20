@@ -4,80 +4,90 @@
 
 #include "saxpy.cuh"
 
-template <typename T>
-class cuda_ptr {
-public:
-    cuda_ptr(void) = default;
+namespace my {
 
-    cuda_ptr(T *ptr)
-        : Ptr_{ptr}
-    {}
-
-    cuda_ptr(cuda_ptr const &cuda_ptr) = delete;
-
-    cuda_ptr(cuda_ptr &&that)
-        : Ptr_{std::move(that.Ptr_)}
-    {}
-
-    ~cuda_ptr(void) {
-        if (Ptr_) {
-            cudaFree(Ptr_);
-        }
-    }
-
-    T *get(void) {
-        return Ptr_;
-    }
-
-    T const *get(void) const {
-        return Ptr_;
-    }
-
-private:
-    T *Ptr_ = nullptr;
-};
-
-template <typename T>
-cuda_ptr<T> make_cuda(size_t size) {
-    T *ptr = nullptr;
-    cudaMalloc(&ptr, size * sizeof(T));
-    return ptr;
-}
-
-void saxpy_cpu(float *a, float *b, float *c, size_t length) {
-    for (size_t it = 0; it != length; ++it) {
-        c[it] = a[it] + b[it];
-    }
-}
+constexpr size_t kWindow = 100;
 
 __global__
 void saxpy_kernel(float *a, float *b, float *c, size_t length) {
     auto tid = threadIdx.x + blockDim.x * blockIdx.x;
-    if (tid < length) {
-        c[tid] = a[tid] + b[tid];
+    if (tid >= length) {
+        return;
     }
-}
 
-void saxpy_gpu(float *a, float *b, float *c, size_t length) {
-    auto dev_a = make_cuda<float>(length);
-    auto dev_b = make_cuda<float>(length);
-    auto dev_c = make_cuda<float>(length);
-
-    cudaMemcpy(dev_a.get(), a, length * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(dev_b.get(), b, length * sizeof(float), cudaMemcpyHostToDevice);
-    cudaMemcpy(dev_c.get(), c, length * sizeof(float), cudaMemcpyHostToDevice);
-
-    dim3 threads(512);
-    dim3 blocks(length / threads.x);
-    saxpy_kernel<<<blocks, threads>>>(dev_a.get(), dev_b.get(), dev_c.get(),
-                                      length);
-}
-
-void saxpy(float *a, float *b, float *c, size_t length, executor_t executor) {
-    switch (executor) {
-    case executor_t::kCpu:
-        saxpy_cpu(a, b, c, length);
-    case executor_t::kGpu:
-        saxpy_gpu(a, b, c, length);
+    float sum = 0.0f, ab = a[tid] * b[tid];
+    for (size_t it = 0; it != kWindow; ++it) {
+        sum += sinf(ab + static_cast<float>(it));
     }
+
+    c[tid] = sum;
 }
+
+cudaError_t saxpy(
+    cuda_ptr<float[]> lhs, cuda_ptr<float[]> rhs, cuda_ptr<float[]> out,
+    size_t length, GpuExecutor executor
+) {
+    constexpr auto kDevice = MemoryType::kDevice;
+
+    std::vector<cuda_stream_t> streams(executor.NoStreams);
+
+    for (size_t it = 0; it != streams.size(); ++it) {
+        size_t hunk = length / streams.size();
+        size_t offset = it * hunk;
+        size_t size = it + 1 == streams.size() ? length - offset : hunk;
+        lhs.sync(offset, size, SyncDir::kToDevice, streams[it]);
+        rhs.sync(offset, size, SyncDir::kToDevice, streams[it]);
+    }
+
+    for (size_t it = 0; it != streams.size(); ++it) {
+        size_t hunk = length / streams.size();
+        size_t offset = it * hunk;
+        size_t size = it + 1 == streams.size() ? length - offset : hunk;
+
+        dim3 threads(512);
+        dim3 blocks(length / threads.x);
+        saxpy_kernel<<<blocks, threads, 0, streams[it]>>>(
+            lhs.get(kDevice) + offset,
+            rhs.get(kDevice) + offset,
+            out.get(kDevice) + offset,
+            size);
+    }
+
+
+    for (size_t it = 0; it != streams.size(); ++it) {
+        size_t hunk = length / streams.size();
+        size_t offset = it * hunk;
+        size_t size = it + 1 == streams.size() ? length - offset : hunk;
+        out.sync(offset, size, SyncDir::kToHost, streams[it]);
+    }
+
+//    cudaDeviceSynchronize();
+
+    return cudaSuccess;
+}
+
+cudaError_t saxpy(
+    cuda_ptr<float[]> lhs, cuda_ptr<float[]> rhs, cuda_ptr<float[]> out,
+    size_t length, CpuExecutor executor
+) {
+    if (executor.VectorExtension != my::VectorExtention::kNone) {
+        return cudaErrorNotYetImplemented;
+    }
+
+    for (size_t i = 0; i != length; ++i) {
+        float arg = static_cast<float>(i);
+        float ai = std::sin(arg);
+        float bi = std::sin(arg * 2 - 5);
+        float ab = ai * bi;
+
+        out[i] = 0;
+
+        for (size_t j = 0; j != kWindow; ++j) {
+            out[i] = sinf(ab + j);
+        }
+    }
+
+    return cudaSuccess;
+}
+
+} // namespace my

@@ -3,24 +3,106 @@
  */
 
 #include <memory>
+#include <iostream>
+
 #include <benchmark/benchmark.h>
 #include <saxpy/saxpy.cuh>
 
-template <executor_t Executor>
-void BM_saxpy(benchmark::State& state) {
-    size_t length = state.range();
-    std::unique_ptr<float[]> a{new float[length]};
-    std::unique_ptr<float[]> b{new float[length]};
-    std::unique_ptr<float[]> c{new float[length]};
+using benchmark::DoNotOptimize;
+using Fixture = benchmark::Fixture;
+using State = benchmark::State;
+
+template <my::MemoryKind Kind>
+class MemoryManager : public Fixture {
+private:
+    static constexpr auto kMemoryKind = Kind;
+
+public:
+    union {
+        size_t concurrency;
+        size_t nostreams;
+        size_t nothreads;
+    };
+
+    size_t length;
+
+    my::cuda_ptr<float[]> lhs;
+    my::cuda_ptr<float[]> rhs;
+    my::cuda_ptr<float[]> dst;
+
+public:
+    virtual void SetUp(State const &state) override {
+    }
+
+    virtual void TearDown(State const &state) override {
+    }
+
+    virtual void SetUp(State &state) override {
+        concurrency = state.range(0);
+        length = state.range(1);
+        std::cerr << "nostreams: " << nostreams << "; "
+                  << "lenght: " << length << '\n';
+        lhs = my::make_cuda<float[]>(length);
+        rhs = my::make_cuda<float[]>(length);
+        dst = my::make_cuda<float[]>(length);
+
+        for (size_t it = 0; it != length; ++it) {
+            lhs[it] = std::sin(static_cast<float>(it));
+            rhs[it] = std::cos(static_cast<float>(it) * 2 - 5);
+        }
+    }
+
+    virtual void TearDown(State &state) override {
+        lhs.release();
+        rhs.release();
+        dst.release();
+    }
+};
+
+BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyCpuDefault, my::MemoryKind::kDefault)(State& state) {
+    my::CpuExecutor executor = { nothreads, my::VectorExtention::kNone };
     for (auto _ : state) {
-        saxpy(a.get(), b.get(), c.get(), length, Executor);
+        DoNotOptimize(saxpy(lhs, rhs, dst, length, executor));
     }
 }
 
-BENCHMARK_TEMPLATE(BM_saxpy, executor_t::kCpu)
-    ->RangeMultiplier(8)
-    ->Range(1 << 9, 1 << 24);
+BENCHMARK_REGISTER_F(MemoryManager, SaxpyCpuDefault)
+    ->Args({1, 512 * 50'000});
 
-BENCHMARK_TEMPLATE(BM_saxpy, executor_t::kGpu)
-    ->RangeMultiplier(8)
-    ->Range(1 << 9, 1 << 24);
+BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyCpuPinned, my::MemoryKind::kPinned)(State& state) {
+    my::CpuExecutor executor = { nothreads, my::VectorExtention::kNone };
+    for (auto _ : state) {
+        DoNotOptimize(saxpy(lhs, rhs, dst, length, executor));
+    }
+}
+
+BENCHMARK_REGISTER_F(MemoryManager, SaxpyCpuPinned)
+    ->Args({1, 512 * 50'000});
+
+BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyGpuDefault, my::MemoryKind::kDefault)(State& state) {
+    my::GpuExecutor executor = { nostreams };
+    auto i = 0;
+    for (auto _ : state) {
+        if (i == 0) {
+            ++i;
+            DoNotOptimize(saxpy(lhs, rhs, dst, length, executor));
+        }
+    }
+}
+
+BENCHMARK_REGISTER_F(MemoryManager, SaxpyGpuDefault)
+    ->Args({1, 512 * 50'000})
+    ->Args({2, 512 * 50'000})
+    ->Args({4, 512 * 50'000});
+
+///BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyGpuPinned, my::MemoryKind::kPinned)(State& state) {
+///    my::GpuExecutor executor = { nostreams };
+///    for (auto _ : state) {
+///        DoNotOptimize(saxpy(lhs, rhs, dst, length, executor));
+///    }
+///}
+///
+///BENCHMARK_REGISTER_F(MemoryManager, SaxpyGpuPinned)
+///    ->Args({1, 512 * 50'000})
+///    ->Args({2, 512 * 50'000})
+///    ->Args({4, 512 * 50'000});
