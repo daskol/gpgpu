@@ -40,11 +40,9 @@ public:
     virtual void SetUp(State &state) override {
         concurrency = state.range(0);
         length = state.range(1);
-        std::cerr << "nostreams: " << nostreams << "; "
-                  << "lenght: " << length << '\n';
-        lhs = my::make_cuda<float[]>(length);
-        rhs = my::make_cuda<float[]>(length);
-        dst = my::make_cuda<float[]>(length);
+        lhs = my::make_cuda<float[]>(length, kMemoryKind);
+        rhs = my::make_cuda<float[]>(length, kMemoryKind);
+        dst = my::make_cuda<float[]>(length, kMemoryKind);
 
         for (size_t it = 0; it != length; ++it) {
             lhs[it] = std::sin(static_cast<float>(it));
@@ -67,25 +65,29 @@ BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyCpuDefault, my::MemoryKind::kDef
 }
 
 BENCHMARK_REGISTER_F(MemoryManager, SaxpyCpuDefault)
-    ->Args({1, 512 * 50'000});
+    ->Args({1, 512 * 50'000})
+    ->Unit(benchmark::kMillisecond);
 
 BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyCpuPinned, my::MemoryKind::kPinned)(State& state) {
     my::CpuExecutor executor = { nothreads, my::VectorExtention::kNone };
     for (auto _ : state) {
-        DoNotOptimize(saxpy(lhs, rhs, dst, length, executor));
+        cudaError_t err = saxpy(lhs, rhs, dst, length, executor);
+        if (err != cudaSuccess) {
+            state.SkipWithError("failed to execute kernel");
+        }
     }
 }
 
 BENCHMARK_REGISTER_F(MemoryManager, SaxpyCpuPinned)
-    ->Args({1, 512 * 50'000});
+    ->Args({1, 512 * 50'000})
+    ->Unit(benchmark::kMillisecond);
 
 BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyGpuDefault, my::MemoryKind::kDefault)(State& state) {
     my::GpuExecutor executor = { nostreams };
-    auto i = 0;
     for (auto _ : state) {
-        if (i == 0) {
-            ++i;
-            DoNotOptimize(saxpy(lhs, rhs, dst, length, executor));
+        cudaError_t err = saxpy(lhs, rhs, dst, length, executor);
+        if (err != cudaSuccess) {
+            state.SkipWithError("failed to execute kernel");
         }
     }
 }
@@ -93,16 +95,27 @@ BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyGpuDefault, my::MemoryKind::kDef
 BENCHMARK_REGISTER_F(MemoryManager, SaxpyGpuDefault)
     ->Args({1, 512 * 50'000})
     ->Args({2, 512 * 50'000})
-    ->Args({4, 512 * 50'000});
+    ->Args({4, 512 * 50'000})
+    ->Args({8, 512 * 50'000})
+    ->Args({16, 512 * 50'000})
+    ->Unit(benchmark::kMillisecond);
 
-///BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyGpuPinned, my::MemoryKind::kPinned)(State& state) {
-///    my::GpuExecutor executor = { nostreams };
-///    for (auto _ : state) {
-///        DoNotOptimize(saxpy(lhs, rhs, dst, length, executor));
-///    }
-///}
-///
-///BENCHMARK_REGISTER_F(MemoryManager, SaxpyGpuPinned)
-///    ->Args({1, 512 * 50'000})
-///    ->Args({2, 512 * 50'000})
-///    ->Args({4, 512 * 50'000});
+BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyGpuPinned, my::MemoryKind::kPinned)(State& state) {
+    my::GpuExecutor executor = { nostreams };
+    for (auto _ : state) {
+        cudaError_t err = saxpy(lhs, rhs, dst, length, executor);
+        if (err != cudaSuccess) {
+            state.SkipWithError("failed to execute kernel");
+        }
+    }
+}
+
+BENCHMARK_REGISTER_F(MemoryManager, SaxpyGpuPinned)
+    ->Args({1, 512 * 50'000})
+    ->Args({4, 512 * 50'000})
+    ->Args({1, 512 * 50'000})
+    ->Args({2, 512 * 50'000})
+    ->Args({4, 512 * 50'000})
+    ->Args({8, 512 * 50'000})
+    ->Args({16, 512 * 50'000})
+    ->Unit(benchmark::kMillisecond);

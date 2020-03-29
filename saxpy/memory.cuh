@@ -246,6 +246,9 @@ private:
                     break;
                 }
             }
+
+            dev = nullptr;
+            host = nullptr;
         }
     };
 
@@ -310,10 +313,12 @@ public:
     }
 
     void release(void) noexcept {
-        ptr->release();
-        if (!ptr->count()) {
-            delete ptr;
-            ptr = nullptr;
+        if (ptr) {
+            ptr->release();
+            if (!ptr->count()) {
+                delete ptr;
+                ptr = nullptr;
+            }
         }
     }
 
@@ -350,11 +355,11 @@ public:
         case SyncDir::kToDevice:
             src = get(MemoryType::kHost) + offset;
             dst = get(MemoryType::kDevice) + offset;
-            cudaMemcpyAsync(src, dst, length, cudaMemcpyHostToDevice, stream);
+            cudaMemcpyAsync(dst, src, length, cudaMemcpyHostToDevice, stream);
         case SyncDir::kToHost:
             src = get(MemoryType::kDevice) + offset;
             dst = get(MemoryType::kHost) + offset;
-            cudaMemcpyAsync(src, dst, length, cudaMemcpyDeviceToHost, stream);
+            cudaMemcpyAsync(dst, src, length, cudaMemcpyDeviceToHost, stream);
         }
         return *this;
     }

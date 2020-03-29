@@ -45,7 +45,7 @@ cudaError_t saxpy(
         size_t size = it + 1 == streams.size() ? length - offset : hunk;
 
         dim3 threads(512);
-        dim3 blocks(length / threads.x);
+        dim3 blocks(size / threads.x);
         saxpy_kernel<<<blocks, threads, 0, streams[it]>>>(
             lhs.get(kDevice) + offset,
             rhs.get(kDevice) + offset,
@@ -61,8 +61,6 @@ cudaError_t saxpy(
         out.sync(offset, size, SyncDir::kToHost, streams[it]);
     }
 
-//    cudaDeviceSynchronize();
-
     return cudaSuccess;
 }
 
@@ -75,9 +73,8 @@ cudaError_t saxpy(
     }
 
     for (size_t i = 0; i != length; ++i) {
-        float arg = static_cast<float>(i);
-        float ai = std::sin(arg);
-        float bi = std::sin(arg * 2 - 5);
+        float ai = lhs[i];
+        float bi = rhs[i];
         float ab = ai * bi;
 
         out[i] = 0;
