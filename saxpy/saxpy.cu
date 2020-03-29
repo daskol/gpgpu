@@ -4,6 +4,8 @@
 
 #include "saxpy.cuh"
 
+#include <saxpy/util.cuh>
+
 namespace my {
 
 constexpr size_t kWindow = 100;
