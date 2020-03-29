@@ -51,6 +51,54 @@ public:
     }
 };
 
+class cuda_event_t {
+private:
+    cudaEvent_t event;
+    cudaError_t error = cudaErrorInvalidValue;
+
+public:
+    cuda_event_t(void)
+        : error{cudaEventCreate(&event)}
+    {}
+
+    cuda_event_t(cudaEvent_t event)
+        : event{event}
+        , error{cudaSuccess}
+    {}
+
+    ~cuda_event_t(void) {
+        if (error == cudaSuccess) {
+            cudaEventDestroy(event);
+        }
+    }
+
+    explicit operator bool(void) const noexcept {
+        return error == cudaSuccess;
+    }
+
+    operator cudaEvent_t(void) const noexcept {
+        return event;
+    }
+
+    cudaEvent_t operator*(void) const noexcept {
+        return event;
+    }
+
+    float operator-(cudaEvent_t rhs) {
+        float elapsed;
+        cudaEventElapsedTime(&elapsed, rhs, event);
+        return elapsed;
+    }
+
+    cudaError_t sync(void) noexcept {
+        return cudaEventSynchronize(event);
+    }
+
+    cudaError_t record(cudaStream_t stream = nullptr) noexcept {
+        return cudaEventRecord(event, stream);
+    }
+};
+
 enum VectorExtention : uint8_t {
     kNone = 0,
     kSse,
@@ -65,6 +113,9 @@ struct CpuExecutor {
 
 struct GpuExecutor {
     size_t NoStreams = 1;
+    float KernelTime = 0.0f;
+    float DtoH = 0.0f;
+    float HtoD = 0.0f;
 };
 
 /**
@@ -74,12 +125,12 @@ struct GpuExecutor {
 
 cudaError_t saxpy(
     cuda_ptr<float[]> lhs, cuda_ptr<float[]> rhs, cuda_ptr<float[]> out,
-    size_t length, CpuExecutor executor
+    size_t length, CpuExecutor &executor
 );
 
 cudaError_t saxpy(
     cuda_ptr<float[]> lhs, cuda_ptr<float[]> rhs, cuda_ptr<float[]> out,
-    size_t length, GpuExecutor executor
+    size_t length, GpuExecutor &executor
 );
 
 } // namespace my

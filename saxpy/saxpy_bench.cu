@@ -3,12 +3,12 @@
  */
 
 #include <memory>
-#include <iostream>
 
 #include <benchmark/benchmark.h>
 #include <saxpy/saxpy.cuh>
 
 using benchmark::DoNotOptimize;
+using Counter = benchmark::Counter;
 using Fixture = benchmark::Fixture;
 using State = benchmark::State;
 
@@ -83,12 +83,20 @@ BENCHMARK_REGISTER_F(MemoryManager, SaxpyCpuPinned)
     ->Unit(benchmark::kMillisecond);
 
 BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyGpuDefault, my::MemoryKind::kDefault)(State& state) {
+    state.counters["dtoh-time"] = Counter(0, Counter::kAvgIterations);
+    state.counters["htod-time"] = Counter(0, Counter::kAvgIterations);
+    state.counters["kernel-time"] = Counter(0, Counter::kAvgIterations);
+
     my::GpuExecutor executor = { nostreams };
     for (auto _ : state) {
         cudaError_t err = saxpy(lhs, rhs, dst, length, executor);
         if (err != cudaSuccess) {
             state.SkipWithError("failed to execute kernel");
         }
+
+        state.counters["htod-time"] += executor.HtoD;
+        state.counters["dtoh-time"] += executor.DtoH;
+        state.counters["kernel-time"] += executor.KernelTime;
     }
 }
 
@@ -101,18 +109,24 @@ BENCHMARK_REGISTER_F(MemoryManager, SaxpyGpuDefault)
     ->Unit(benchmark::kMillisecond);
 
 BENCHMARK_TEMPLATE_DEFINE_F(MemoryManager, SaxpyGpuPinned, my::MemoryKind::kPinned)(State& state) {
+    state.counters["dtoh-time"] = Counter(0, Counter::kAvgIterations);
+    state.counters["htod-time"] = Counter(0, Counter::kAvgIterations);
+    state.counters["kernel-time"] = Counter(0, Counter::kAvgIterations);
+
     my::GpuExecutor executor = { nostreams };
     for (auto _ : state) {
         cudaError_t err = saxpy(lhs, rhs, dst, length, executor);
         if (err != cudaSuccess) {
             state.SkipWithError("failed to execute kernel");
         }
+
+        state.counters["htod-time"] += executor.HtoD;
+        state.counters["dtoh-time"] += executor.DtoH;
+        state.counters["kernel-time"] += executor.KernelTime;
     }
 }
 
 BENCHMARK_REGISTER_F(MemoryManager, SaxpyGpuPinned)
-    ->Args({1, 512 * 50'000})
-    ->Args({4, 512 * 50'000})
     ->Args({1, 512 * 50'000})
     ->Args({2, 512 * 50'000})
     ->Args({4, 512 * 50'000})
