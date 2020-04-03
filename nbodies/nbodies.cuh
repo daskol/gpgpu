@@ -14,4 +14,14 @@ int solve(
     CpuExecutor executor
 );
 
+struct GpuExecutor {
+    bool UseSharedMemory = true;
+};
+
+int solve(
+    size_t nbodies, size_t nosteps, float time_delta,
+    float const *pos_init, float const *vel_init, float *poss, float *vels,
+    GpuExecutor executor
+);
+
 } // namespace my

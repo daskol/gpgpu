@@ -20,7 +20,7 @@ int main(int argc, char *argv[]) {
     my::solve(nbodies, nosteps, time_delta,
         pos_init.get(), vel_init.get(),
         poss.get(), vels.get(),
-        {});
+        my::GpuExecutor{});
 
     return 0;
 }
