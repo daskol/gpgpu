@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cuda.h>
 
+#include <saxpy/util.cuh>
+
 namespace my {
 
 static constexpr float kMinRadius = 1e-2;
@@ -94,6 +96,14 @@ int solve(
     return 0;
 }
 
+int solve_gpu_shared(
+    size_t nbodies, size_t nosteps, float time_delta,
+    float const *pos_init, float const *vel_init, float *poss, float *vels,
+    GpuExecutor &executor
+) {
+    return 0;
+}
+
 __global__
 void calc_accels(float const *pos_prev, float *acc_next, size_t nbodies) {
     size_t it = static_cast<size_t>(threadIdx.x + blockDim.x * blockIdx.x);
@@ -135,20 +145,26 @@ void calc_posits(
         acc_prev[3 * it + 0], acc_prev[3 * it + 1], acc_prev[3 * it + 2],
     };
 
-    pos_next[3 * it + 0] = pos_prev[3 * it + 0] + time_delta * vel_prev[3 * it + 0] + 0.5 * time_delta_sqr * acc[3 * it + 0];
-    pos_next[3 * it + 1] = pos_prev[3 * it + 1] + time_delta * vel_prev[3 * it + 1] + 0.5 * time_delta_sqr * acc[3 * it + 1];
-    pos_next[3 * it + 2] = pos_prev[3 * it + 2] + time_delta * vel_prev[3 * it + 2] + 0.5 * time_delta_sqr * acc[3 * it + 2];
+    pos_next[3 * it + 0] = pos_prev[3 * it + 0] + time_delta * vel_prev[3 * it + 0] + 0.5 * time_delta_sqr * acc[0];
+    pos_next[3 * it + 1] = pos_prev[3 * it + 1] + time_delta * vel_prev[3 * it + 1] + 0.5 * time_delta_sqr * acc[1];
+    pos_next[3 * it + 2] = pos_prev[3 * it + 2] + time_delta * vel_prev[3 * it + 2] + 0.5 * time_delta_sqr * acc[2];
 
-    vel_next[3 * it + 0] = vel_prev[3 * it + 0] + time_delta * acc[3 * it + 0];
-    vel_next[3 * it + 1] = vel_prev[3 * it + 1] + time_delta * acc[3 * it + 1];
-    vel_next[3 * it + 2] = vel_prev[3 * it + 2] + time_delta * acc[3 * it + 2];
+    vel_next[3 * it + 0] = vel_prev[3 * it + 0] + time_delta * acc[0];
+    vel_next[3 * it + 1] = vel_prev[3 * it + 1] + time_delta * acc[1];
+    vel_next[3 * it + 2] = vel_prev[3 * it + 2] + time_delta * acc[2];
 }
 
-int solve(
+int solve_gpu(
     size_t nbodies, size_t nosteps, float time_delta,
     float const *pos_init, float const *vel_init, float *poss, float *vels,
-    GpuExecutor executor
+    GpuExecutor &executor
 ) {
+    cuda_event_t begin, end;
+
+    if (!begin || !end) {
+        return static_cast<int>(cudaGetLastError());
+    }
+
     size_t size = 3 * nbodies;
     size_t size_bytes = size * sizeof(float);
 
@@ -175,6 +191,8 @@ int solve(
     dev_pos_init = dev_pos_prev;
     dev_vel_init = dev_vel_prev;
 
+    begin.record();
+
     cudaMemcpy(dev_pos_init, pos_init, size_bytes, cudaMemcpyHostToDevice);
     cudaMemcpy(dev_vel_init, vel_init, size_bytes, cudaMemcpyHostToDevice);
 
@@ -200,7 +218,29 @@ int solve(
     cudaMemcpy(poss, dev_pos_next, nosteps * size_bytes, cudaMemcpyDeviceToHost);
     cudaMemcpy(vels, dev_vel_next, nosteps * size_bytes, cudaMemcpyDeviceToHost);
 
+    end.record();
+    end.sync();
+    executor.ElapsedTime = end - begin;
+
     return static_cast<int>(cudaGetLastError());
+}
+
+int solve(
+    size_t nbodies, size_t nosteps, float time_delta,
+    float const *pos_init, float const *vel_init, float *poss, float *vels,
+    GpuExecutor &executor
+) {
+    if (executor.UseSharedMemory) {
+        return solve_gpu_shared(
+            nbodies, nosteps, time_delta,
+            pos_init, vel_init, poss, vels,
+            executor);
+    } else {
+        return solve_gpu(
+            nbodies, nosteps, time_delta,
+            pos_init, vel_init, poss, vels,
+            executor);
+    }
 }
 
 } // namespace my
