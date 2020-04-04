@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
     auto vels = std::make_unique<float[]>(3 * nbodies * nosteps);
 
     auto executor = my::GpuExecutor{
-        .UseSharedMemory = false,
+        .UseSharedMemory = true,
     };
 
     auto err = my::solve(nbodies, nosteps, time_delta,

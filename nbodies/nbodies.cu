@@ -22,7 +22,7 @@ constexpr float cube(float value) {
 int solve(
     size_t nbodies, float time_delta,
     float const *pos_init, float const *vel_init, float *poss, float *vels,
-    CpuExecutor executor
+    CpuExecutor &executor
 ) {
     // Use posistion array as a temporary storage for accelaration.
     float *accs = poss;
@@ -71,8 +71,15 @@ int solve(
 int solve(
     size_t nbodies, size_t nosteps, float time_delta,
     float const *pos_init, float const *vel_init, float *poss, float *vels,
-    CpuExecutor executor
+    CpuExecutor &executor
 ) {
+    cuda_event_t begin, end;
+    if (!begin || !end) {
+        return static_cast<int>(cudaGetLastError());
+    }
+
+    begin.record();
+
     float const *pos_prev = pos_init;
     float const *vel_prev = vel_init;
 
@@ -92,6 +99,10 @@ int solve(
          pos_prev = pos_next;
          vel_prev = vel_next;
     }
+
+    end.record();
+    end.sync();
+    executor.ElapsedTime = end - begin;
 
     return 0;
 }
@@ -134,6 +145,62 @@ void calc_accels(float const *pos_prev, float *acc_next, size_t nbodies) {
 }
 
 __global__
+void calc_accels_shared(
+    float const *pos_prev, float *acc_next,
+    size_t nbodies, size_t noblocks
+) {
+    size_t const it = static_cast<size_t>(threadIdx.x + blockDim.x * blockIdx.x);
+    size_t const block_size = 256;
+
+    __shared__
+    float pos_cache[3 * block_size];
+    float acc[3] = { 0.0, 0.0, 0.0 };
+
+    // Position of the current particle.
+    float pos[3] = {
+        pos_prev[3 * it + 0], pos_prev[3 * it + 1], pos_prev[3 * it + 1],
+    };
+
+    for (size_t block = 0; block != noblocks; ++block) {
+        pos_cache[3 * threadIdx.x + 0] = pos_prev[3 * threadIdx.x + 0];
+        pos_cache[3 * threadIdx.x + 1] = pos_prev[3 * threadIdx.x + 1];
+        pos_cache[3 * threadIdx.x + 2] = pos_prev[3 * threadIdx.x + 2];
+
+        // Wait untill all threads in block initialize corresponding block of
+        // particle position.
+        __syncthreads();
+
+        for (size_t kt = 0; kt != block_size; ++kt) {
+            size_t jt = block * block_size + kt;
+
+            if (it == jt) {
+                continue;
+            }
+
+            float dx = pos_cache[3 * kt + 0] - pos[0];
+            float dy = pos_cache[3 * kt + 1] - pos[1];
+            float dz = pos_cache[3 * kt + 2] - pos[2];
+            float dr = sqrtf(dx * dx + dy * dy + dz * dz);
+
+            if (dr < kMinRadius) {
+                continue;
+            }
+
+            acc[0] += kG * dx / cube(dr);
+            acc[1] += kG * dy / cube(dr);
+            acc[2] += kG * dz / cube(dr);
+        }
+
+        // Wait untill all threads estimate forces from a block of particles.
+        __syncthreads();
+    }
+
+    acc_next[3 * it + 0] = acc[0];
+    acc_next[3 * it + 1] = acc[1];
+    acc_next[3 * it + 2] = acc[2];
+}
+
+__global__
 void calc_posits(
     float const *pos_prev, float const *vel_prev, float const *acc_prev,
     float *pos_next, float *vel_next,
@@ -154,13 +221,12 @@ void calc_posits(
     vel_next[3 * it + 2] = vel_prev[3 * it + 2] + time_delta * acc[2];
 }
 
-int solve_gpu(
+int solve(
     size_t nbodies, size_t nosteps, float time_delta,
     float const *pos_init, float const *vel_init, float *poss, float *vels,
     GpuExecutor &executor
 ) {
     cuda_event_t begin, end;
-
     if (!begin || !end) {
         return static_cast<int>(cudaGetLastError());
     }
@@ -169,6 +235,7 @@ int solve_gpu(
     size_t size_bytes = size * sizeof(float);
 
     float *dev_pos_init, *dev_pos_prev, *dev_pos_next;
+    float *dev_vel_init, *dev_vel_prev, *dev_vel_next;
 
     if (cudaMalloc(&dev_pos_prev, size_bytes) != cudaSuccess) {
         return 1;
@@ -177,8 +244,6 @@ int solve_gpu(
     if (cudaMalloc(&dev_pos_next, nosteps * size_bytes) != cudaSuccess) {
         return 1;
     }
-
-    float *dev_vel_init, *dev_vel_prev, *dev_vel_next;
 
     if (cudaMalloc(&dev_vel_prev, size_bytes) != cudaSuccess) {
         return 1;
@@ -191,7 +256,7 @@ int solve_gpu(
     dev_pos_init = dev_pos_prev;
     dev_vel_init = dev_vel_prev;
 
-    begin.record();
+    begin.record(); // Start timer.
 
     cudaMemcpy(dev_pos_init, pos_init, size_bytes, cudaMemcpyHostToDevice);
     cudaMemcpy(dev_vel_init, vel_init, size_bytes, cudaMemcpyHostToDevice);
@@ -203,8 +268,18 @@ int solve_gpu(
         // Use temporary as a buffer for acceleration.
         float *dev_acc_buffer = dev_pos_next + step * size;
 
-        calc_accels<<<noblocks, nothreads>>>(dev_pos_prev, dev_acc_buffer, nbodies);
+        // Call suitable CUDA kernel if usage of shared memory is allowed.
+        if (executor.UseSharedMemory) {
+            calc_accels_shared<<<noblocks, nothreads>>>(
+                dev_pos_prev, dev_acc_buffer,
+                nbodies, noblocks.x);
+        } else {
+            calc_accels<<<noblocks, nothreads>>>(
+                dev_pos_prev, dev_acc_buffer,
+                nbodies);
+        }
 
+        // Update positions of particles.
         calc_posits<<<noblocks, nothreads>>>(
             dev_pos_prev, dev_vel_prev, dev_acc_buffer,
             dev_pos_next + step * size, dev_vel_next + step * size,
@@ -218,29 +293,12 @@ int solve_gpu(
     cudaMemcpy(poss, dev_pos_next, nosteps * size_bytes, cudaMemcpyDeviceToHost);
     cudaMemcpy(vels, dev_vel_next, nosteps * size_bytes, cudaMemcpyDeviceToHost);
 
+    // Stop timer and estimate time spent on calculation.
     end.record();
     end.sync();
     executor.ElapsedTime = end - begin;
 
     return static_cast<int>(cudaGetLastError());
-}
-
-int solve(
-    size_t nbodies, size_t nosteps, float time_delta,
-    float const *pos_init, float const *vel_init, float *poss, float *vels,
-    GpuExecutor &executor
-) {
-    if (executor.UseSharedMemory) {
-        return solve_gpu_shared(
-            nbodies, nosteps, time_delta,
-            pos_init, vel_init, poss, vels,
-            executor);
-    } else {
-        return solve_gpu(
-            nbodies, nosteps, time_delta,
-            pos_init, vel_init, poss, vels,
-            executor);
-    }
 }
 
 } // namespace my

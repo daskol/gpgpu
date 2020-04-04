@@ -6,20 +6,20 @@
 
 namespace my {
 
-struct CpuExecutor {
-    size_t NoThreads = 1;
+struct Executor {
+    float ElapsedTime = 0;
 };
+
+struct CpuExecutor : Executor {};
 
 int solve(
     size_t nbodies, size_t nosteps, float time_delta,
     float const *pos_init, float const *vel_init, float *poss, float *vels,
-    CpuExecutor executor
+    CpuExecutor &executor
 );
 
-struct GpuExecutor {
+struct GpuExecutor : Executor {
     bool UseSharedMemory = true;
-
-    float ElapsedTime = 0.0f;
 };
 
 int solve(
